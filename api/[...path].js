@@ -2,38 +2,66 @@ export const config = {
   runtime: 'edge'
 }
 
-export default async function handler(request) {
-  try {
-    // 从环境变量读取，代码里完全不暴露
-    const TARGET_WORKER = process.env.TARGET_WORKER
-    const AUTH_KEY = process.env.AUTH_KEY
+const ALLOWED_METHODS = ['GET', 'POST', 'OPTIONS']
 
-    // 强制鉴权（可选但强烈建议）
-    const userAuth = request.headers.get('auth')
-    if (AUTH_KEY && userAuth !== AUTH_KEY) {
+export default async function handler(req) {
+  const TARGET_WORKER = process.env.TARGET_WORKER
+  const AUTH_KEY = process.env.AUTH_KEY
+
+  // 1. 只允许常用方法
+  if (!ALLOWED_METHODS.includes(req.method)) {
+    return new Response('Method Not Allowed', { status: 405 })
+  }
+
+  // 2. 强制鉴权（没有 AUTH_KEY 就不启用）
+  if (AUTH_KEY) {
+    const auth = req.headers.get('auth') 
+             || req.headers.get('Authorization')
+             || new URL(req.url).searchParams.get('auth')
+
+    if (!auth || auth !== AUTH_KEY && auth !== `Bearer ${AUTH_KEY}`) {
       return new Response('Unauthorized', { status: 401 })
     }
+  }
 
-    const { path } = request.query || {}
-    const url = new URL(request.url)
+  // 3. 拼接路径
+  const { path } = req.query || {}
+  const url = new URL(req.url)
+  const target = new URL(path ? path.join('/') : '', TARGET_WORKER)
+  target.search = url.search
 
-    const targetUrl = new URL(
-      path ? path.join('/') : '',
-      TARGET_WORKER
-    )
-    targetUrl.search = url.search
+  // 4. 转发请求
+  const res = await fetch(target, {
+    method: req.method,
+    headers: cleanHeaders(req.headers, target.host),
+    body: req.method === 'OPTIONS' ? null : req.body
+  })
 
-    const res = await fetch(targetUrl, {
-      method: request.method,
-      headers: createRequestHeaders(request.headers, TARGET_WORKER),
-      body: request.body
-    })
+  // 5. 安全返回
+  return new Response(res.body, {
+    status: res.status,
+    headers: buildSafeHeaders(res.headers)
+  })
+}
 
-    return new Response(res.body, {
-      status: res.status,
-      headers: createResponseHeaders(res.headers)
-    })
-  } catch (err) {
+// 清理请求头
+function cleanHeaders(headers, host) {
+  const h = new Headers(headers)
+  h.set('Host', host)
+  h.delete('cf-connecting-ip')
+  h.delete('cf-ray')
+  return h
+}
+
+// 安全响应头 + 跨域
+function buildSafeHeaders(headers) {
+  const h = new Headers(headers)
+  h.set('Access-Control-Allow-Origin', '*')
+  h.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  h.set('Access-Control-Allow-Headers', 'Content-Type,auth')
+  h.delete('content-security-policy')
+  return h
+}
     return new Response('Proxy error', { status: 500 })
   }
 }
