@@ -8,32 +8,55 @@ export default async function handler(req) {
   const TARGET_WORKER = process.env.TARGET_WORKER
   const AUTH_KEY = process.env.AUTH_KEY
 
-  // 1. 只允许常用方法
   if (!ALLOWED_METHODS.includes(req.method)) {
     return new Response('Method Not Allowed', { status: 405 })
   }
 
-  // 2. 强制鉴权（没有 AUTH_KEY 就不启用）
   if (AUTH_KEY) {
-    const auth = req.headers.get('auth') 
-             || req.headers.get('Authorization')
-             || new URL(req.url).searchParams.get('auth')
+    const url = new URL(req.url)
+    const auth = 
+      req.headers.get('auth') 
+      || req.headers.get('Authorization')
+      || url.searchParams.get('auth')
 
-    if (!auth || auth !== AUTH_KEY && auth !== `Bearer ${AUTH_KEY}`) {
+    if (!auth || (auth !== AUTH_KEY && auth !== `Bearer ${AUTH_KEY}`)) {
       return new Response('Unauthorized', { status: 401 })
     }
   }
 
-  // 3. 拼接路径
   const { path } = req.query || {}
   const url = new URL(req.url)
   const target = new URL(path ? path.join('/') : '', TARGET_WORKER)
   target.search = url.search
 
-  // 4. 转发请求
   const res = await fetch(target, {
     method: req.method,
     headers: cleanHeaders(req.headers, target.host),
+    body: req.method === 'OPTIONS' ? null : req.body
+  })
+
+  return new Response(res.body, {
+    status: res.status,
+    headers: buildSafeHeaders(res.headers)
+  })
+}
+
+function cleanHeaders(headers, host) {
+  const h = new Headers(headers)
+  h.set('Host', host)
+  h.delete('cf-connecting-ip')
+  h.delete('cf-ray')
+  return h
+}
+
+function buildSafeHeaders(headers) {
+  const h = new Headers(headers)
+  h.set('Access-Control-Allow-Origin', '*')
+  h.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  h.set('Access-Control-Allow-Headers', 'Content-Type,auth')
+  h.delete('content-security-policy')
+  return h
+}
     body: req.method === 'OPTIONS' ? null : req.body
   })
 
