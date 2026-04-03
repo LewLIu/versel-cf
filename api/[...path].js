@@ -2,38 +2,54 @@ export const config = {
   runtime: 'edge'
 }
 
-// 👇 这里改成你自己的 Cloudflare Worker 完整地址！！！
-const TARGET_WORKER = 'https://你的worker地址.workers.dev'
-
 export default async function handler(request) {
-  // 👇 改成你自己的密钥，比如"my-secret-key-123"
-  const AUTH_KEY = "my-secret-key-123"
-  const authHeader = request.headers.get("Authorization") || request.headers.get("auth")
-  if (!authHeader || authHeader !== `Bearer ${AUTH_KEY}` && authHeader !== AUTH_KEY) {
-    return new Response("Unauthorized", { status: 401 })
-  }
   try {
+    // 从环境变量读取，代码里完全不暴露
+    const TARGET_WORKER = process.env.TARGET_WORKER
+    const AUTH_KEY = process.env.AUTH_KEY
+
+    // 强制鉴权（可选但强烈建议）
+    const userAuth = request.headers.get('auth')
+    if (AUTH_KEY && userAuth !== AUTH_KEY) {
+      return new Response('Unauthorized', { status: 401 })
+    }
+
     const { path } = request.query || {}
     const url = new URL(request.url)
 
-    // 拼接完整目标地址
     const targetUrl = new URL(
       path ? path.join('/') : '',
       TARGET_WORKER
     )
     targetUrl.search = url.search
 
-    // 转发请求到Cloudflare Worker
     const res = await fetch(targetUrl, {
       method: request.method,
-      headers: createRequestHeaders(request.headers),
-      body: request.body,
-      redirect: 'follow'
+      headers: createRequestHeaders(request.headers, TARGET_WORKER),
+      body: request.body
     })
 
-    // 返回结果，自动解决跨域
     return new Response(res.body, {
       status: res.status,
+      headers: createResponseHeaders(res.headers)
+    })
+  } catch (err) {
+    return new Response('Proxy error', { status: 500 })
+  }
+}
+
+function createRequestHeaders(headers, target) {
+  const h = new Headers(headers)
+  h.set('Host', new URL(target).host)
+  return h
+}
+
+function createResponseHeaders(headers) {
+  const h = new Headers(headers)
+  h.set('Access-Control-Allow-Origin', '*')
+  h.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  return h
+}
       headers: createResponseHeaders(res.headers)
     })
   } catch (err) {
